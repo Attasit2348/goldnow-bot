@@ -1,5 +1,5 @@
 flask
 requests
-pandas
-pandas-ta
+pandas==2.2.2
 gunicorn
+https://github.com/twopirllc/pandas-ta/tarball/development
