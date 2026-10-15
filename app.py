@@ -3,7 +3,6 @@ import requests
 import threading
 import time
 import pandas as pd
-import pandas_ta as ta
 from datetime import datetime
 
 app = Flask(__name__)
@@ -23,7 +22,7 @@ latest_price_data = {
 }
 
 def send_telegram_alert(message):
-    if TELEGRAM_BOT_TOKEN == "8986056921:AAGRWD4YpmhnoHL47__TmzA6qa5JR4ShDHwN":
+    if not TELEGRAM_BOT_TOKEN:
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
@@ -77,7 +76,8 @@ def fetch_hsh_api():
                     df_ticks['datetime'] = pd.to_datetime(df_ticks['time'], unit='s')
                     df_ticks.set_index('datetime', inplace=True)
                     
-                    df_ohlc = df_ticks['price'].resample('1h').ohlc().dropna()
+                    # ปรับเป็น 1min เพื่อประมวลผลแท่งเทียนได้รวดเร็ว
+                    df_ohlc = df_ticks['price'].resample('1min').ohlc().dropna()
                     
                     chart_data = []
                     for idx, row in df_ohlc.iterrows():
@@ -91,9 +91,17 @@ def fetch_hsh_api():
                     ohlc_candles = chart_data
 
                     if len(df_ohlc) >= 3:
-                        df_ohlc['ema21'] = ta.ema(df_ohlc['close'], length=min(21, len(df_ohlc)))
-                        df_ohlc['ema50'] = ta.ema(df_ohlc['close'], length=min(50, len(df_ohlc)))
-                        df_ohlc['rsi'] = ta.rsi(df_ohlc['close'], length=min(14, len(df_ohlc)))
+                        # คำนวณ EMA21, EMA50 และ RSI14 ด้วย pandas ดั้งเดิม
+                        df_ohlc['ema21'] = df_ohlc['close'].ewm(span=min(21, len(df_ohlc)), adjust=False).mean()
+                        df_ohlc['ema50'] = df_ohlc['close'].ewm(span=min(50, len(df_ohlc)), adjust=False).mean()
+
+                        delta = df_ohlc['close'].diff()
+                        gain = delta.where(delta > 0, 0)
+                        loss = -delta.where(delta < 0, 0)
+                        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+                        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+                        rs = avg_gain / (avg_loss + 1e-10)
+                        df_ohlc['rsi'] = 100 - (100 / (1 + rs))
 
                         last_row = df_ohlc.iloc[-1]
                         close_p = last_row['close']
@@ -147,5 +155,7 @@ def get_live():
     return jsonify(latest_price_data)
 
 if __name__ == "__main__":
+    import os
+    port = int(os.environ.get("PORT", 5000))
     threading.Thread(target=fetch_hsh_api, daemon=True).start()
-    app.run(host="0.0.0.0", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=port, debug=False)
