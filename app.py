@@ -76,8 +76,8 @@ def fetch_hsh_api():
                     df_ticks['datetime'] = pd.to_datetime(df_ticks['time'], unit='s')
                     df_ticks.set_index('datetime', inplace=True)
                     
-                    # ปรับเป็น 1min เพื่อประมวลผลแท่งเทียนได้รวดเร็ว
-                    df_ohlc = df_ticks['price'].resample('1min').ohlc().dropna()
+                    # ปรับเป็น Timeframe 1 ชั่วโมง (1h)
+                    df_ohlc = df_ticks['price'].resample('1h').ohlc().dropna()
                     
                     chart_data = []
                     for idx, row in df_ohlc.iterrows():
@@ -91,7 +91,7 @@ def fetch_hsh_api():
                     ohlc_candles = chart_data
 
                     if len(df_ohlc) >= 3:
-                        # คำนวณ EMA21, EMA50 และ RSI14 ด้วย pandas ดั้งเดิม
+                        # คำนวณ EMA21, EMA50 และ RSI14 ด้วย pandas
                         df_ohlc['ema21'] = df_ohlc['close'].ewm(span=min(21, len(df_ohlc)), adjust=False).mean()
                         df_ohlc['ema50'] = df_ohlc['close'].ewm(span=min(50, len(df_ohlc)), adjust=False).mean()
 
@@ -128,19 +128,22 @@ def fetch_hsh_api():
                             current_signal = "SELL"
 
                         latest_price_data["signal"] = current_signal
-                        latest_price_data["score"] = f"Long: {long_score}/10 | Short: {short_score}/10"
+                        latest_price_data["score"] = f"Long: {long_score}/10 | Short: {short_score}/10 (1h)"
 
                         if current_signal != last_signal and current_signal != "WAIT":
-                            msg = f"🔔 [Gold Now Alert]\nสัญญาณ: {current_signal}\nราคาขายออก: {sell_price:,.0f} บาท\nRSI: {rsi_p:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
+                            msg = f"🔔 [Gold Now Alert - 1h]\nสัญญาณ: {current_signal}\nราคาขายออก: {sell_price:,.0f} บาท\nRSI: {rsi_p:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
                             send_telegram_alert(msg)
                             last_signal = current_signal
                     else:
-                        latest_price_data["score"] = f"รอแท่งเทียน ({len(df_ohlc)}/3)"
+                        latest_price_data["score"] = f"รอแท่งเทียน 1h ({len(df_ohlc)}/3)"
 
         except Exception as e:
             print(f"Error fetching HSH API: {e}")
 
         time.sleep(5)
+
+# เรียกการทำงานของ Thread ดึงราคา Realtime รองรับทั้ง Local และ Gunicorn
+threading.Thread(target=fetch_hsh_api, daemon=True).start()
 
 @app.route("/")
 def index():
@@ -157,5 +160,4 @@ def get_live():
 if __name__ == "__main__":
     import os
     port = int(os.environ.get("PORT", 5000))
-    threading.Thread(target=fetch_hsh_api, daemon=True).start()
     app.run(host="0.0.0.0", port=port, debug=False)
