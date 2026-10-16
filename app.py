@@ -44,12 +44,16 @@ def parse_price(val):
     return float(clean_str) if clean_str else 0.0
 
 def calc_indicators(df_ohlc):
-    """ฟังก์ชันคำนวณ EMA21, EMA50, RSI14"""
+    """ฟังก์ชันคำนวณ EMA21, EMA50, EMA200 และ RSI14"""
     if len(df_ohlc) < 3:
         return df_ohlc
+    
+    # คำนวณ EMA 21, 50, 200
     df_ohlc['ema21'] = df_ohlc['close'].ewm(span=min(21, len(df_ohlc)), adjust=False).mean()
     df_ohlc['ema50'] = df_ohlc['close'].ewm(span=min(50, len(df_ohlc)), adjust=False).mean()
+    df_ohlc['ema200'] = df_ohlc['close'].ewm(span=min(200, len(df_ohlc)), adjust=False).mean()
 
+    # คำนวณ RSI 14
     delta = df_ohlc['close'].diff()
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
@@ -62,17 +66,20 @@ def calc_indicators(df_ohlc):
 def to_chart_data(df_ohlc):
     chart_data = []
     for idx, row in df_ohlc.iterrows():
-        chart_data.append({
+        item = {
             "time": int(idx.timestamp()),
             "open": float(row['open']),
             "high": float(row['high']),
             "low": float(row['low']),
-            "close": float(row['close'])
-        })
+            "close": float(row['close']),
+            "ema21": float(row['ema21']) if 'ema21' in row and not pd.isna(row['ema21']) else None,
+            "ema50": float(row['ema50']) if 'ema50' in row and not pd.isna(row['ema50']) else None,
+            "ema200": float(row['ema200']) if 'ema200' in row and not pd.isna(row['ema200']) else None
+        }
+        chart_data.append(item)
     return chart_data
 
 def get_tf_bias(df_ohlc):
-    """ประเมินทิศทางของ Timeframe นั้นๆ (+1 ขาขึ้น, -1 ขาลง, 0 ก้ำกึ่ง)"""
     if len(df_ohlc) < 3:
         return 0
     last = df_ohlc.iloc[-1]
@@ -115,7 +122,6 @@ def fetch_hsh_api():
                     df_ticks['datetime'] = pd.to_datetime(df_ticks['time'], unit='s')
                     df_ticks.set_index('datetime', inplace=True)
                     
-                    # Resample สำหรับ Timeframes 1h, 4h, 1D
                     df_1h = calc_indicators(df_ticks['price'].resample('1h').ohlc().dropna())
                     df_4h = calc_indicators(df_ticks['price'].resample('4h').ohlc().dropna())
                     df_1d = calc_indicators(df_ticks['price'].resample('1D').ohlc().dropna())
@@ -124,7 +130,6 @@ def fetch_hsh_api():
                     ohlc_candles["4h"] = to_chart_data(df_4h)
                     ohlc_candles["1d"] = to_chart_data(df_1d)
 
-                    # ตรวจสอบทิศทางทั้ง 3 TF (1h, 4h, 1d)
                     b_1h = get_tf_bias(df_1h)
                     b_4h = get_tf_bias(df_4h)
                     b_1d = get_tf_bias(df_1d)
@@ -142,7 +147,7 @@ def fetch_hsh_api():
 
                     if current_signal != last_signal and current_signal != "WAIT":
                         rsi_val = df_1h.iloc[-1].get('rsi', 0) if len(df_1h) > 0 else 0
-                        msg = f"🔔 [Gold Now Alert - Major MTF]\nสัญญาณ: {current_signal} (สอดคล้อง 3 TF: 1H, 4H, 1D)\nราคาขายออก: {sell_price:,.0f} บาท\nRSI 1h: {rsi_val:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
+                        msg = f"🔔 [Gold Now Alert]\nสัญญาณ: {current_signal} (สอดคล้อง 1H, 4H, 1D)\nราคาขายออก: {sell_price:,.0f} บาท\nRSI 1h: {rsi_val:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
                         send_telegram_alert(msg)
                         last_signal = current_signal
 

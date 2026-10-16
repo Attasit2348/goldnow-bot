@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gold Now Realtime MTF Chart (1H, 4H, 1D)</title>
+    <title>Gold Now Realtime Chart (EMA & Fibonacci)</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         body { margin: 0; padding: 20px; background-color: #131722; color: #d1d4dc; font-family: sans-serif; }
@@ -12,10 +12,13 @@
         .val { font-size: 20px; font-weight: bold; color: #ffb703; }
         .buy { color: #26a69a; }
         .sell { color: #ef5350; }
-        .tf-container { margin-bottom: 10px; display: flex; gap: 10px; }
+        .tf-container { margin-bottom: 10px; display: flex; gap: 10px; align-items: center; }
         .tf-btn { background: #2b2b43; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
         .tf-btn.active { background: #ffb703; color: #000; }
-        #chart { width: 100%; height: 500px; background-color: #1e222d; border-radius: 8px; overflow: hidden; }
+        .legend { display: flex; gap: 15px; font-size: 13px; margin-left: auto; font-weight: bold; }
+        .legend-item { display: flex; align-items: center; gap: 5px; }
+        .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        #chart { width: 100%; height: 520px; background-color: #1e222d; border-radius: 8px; overflow: hidden; }
     </style>
 </head>
 <body>
@@ -43,26 +46,52 @@
         <button class="tf-btn active" onclick="setTF('1h', this)">1H</button>
         <button class="tf-btn" onclick="setTF('4h', this)">4H</button>
         <button class="tf-btn" onclick="setTF('1d', this)">1D</button>
+
+        <div class="legend">
+            <div class="legend-item"><span class="dot" style="background:#00b4d8;"></span> EMA 21 (ฟ้า)</div>
+            <div class="legend-item"><span class="dot" style="background:#f77f00;"></span> EMA 50 (ส้ม)</div>
+            <div class="legend-item"><span class="dot" style="background:#9c27b0;"></span> EMA 200 (ม่วง)</div>
+        </div>
     </div>
 
     <div id="chart"></div>
 
     <script>
         let currentTF = '1h';
+        let fibLines = [];
         const chartElement = document.getElementById('chart');
         const tzOffset = -new Date().getTimezoneOffset() * 60;
         
         const chart = LightweightCharts.createChart(chartElement, {
             width: chartElement.clientWidth,
-            height: 500,
+            height: 520,
             layout: { background: { type: 'solid', color: '#1e222d' }, textColor: '#d1d4dc' },
             grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
             timeScale: { timeVisible: true, secondsVisible: false }
         });
 
+        // แท่งเทียน OHLC
         const candlestickSeries = chart.addCandlestickSeries({
             upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
             wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+            priceFormat: { type: 'price', precision: 0, minMove: 1 }
+        });
+
+        // เส้น EMA 21 (ฟ้า)
+        const ema21Series = chart.addLineSeries({
+            color: '#00b4d8', lineWidth: 2, title: 'EMA 21',
+            priceFormat: { type: 'price', precision: 0, minMove: 1 }
+        });
+
+        // เส้น EMA 50 (ส้ม)
+        const ema50Series = chart.addLineSeries({
+            color: '#f77f00', lineWidth: 2, title: 'EMA 50',
+            priceFormat: { type: 'price', precision: 0, minMove: 1 }
+        });
+
+        // เส้น EMA 200 (ม่วง)
+        const ema200Series = chart.addLineSeries({
+            color: '#9c27b0', lineWidth: 2, title: 'EMA 200',
             priceFormat: { type: 'price', precision: 0, minMove: 1 }
         });
 
@@ -73,13 +102,68 @@
             loadChartData();
         }
 
+        function updateFibonacci(candles) {
+            // ลบเส้น Fibonacci เดิมออก
+            fibLines.forEach(line => candlestickSeries.removePriceLine(line));
+            fibLines = [];
+
+            if (candles.length < 2) return;
+
+            const highs = candles.map(c => c.high);
+            const lows = candles.map(c => c.low);
+            const maxHigh = Math.max(...highs);
+            const minLow = Math.min(...lows);
+            const diff = maxHigh - minLow;
+
+            if (diff <= 0) return;
+
+            const fib382 = maxHigh - (diff * 0.382);
+            const fib500 = maxHigh - (diff * 0.500);
+            const fib618 = maxHigh - (diff * 0.618);
+
+            const levels = [
+                { price: fib382, title: 'Fib 38.2%', color: '#4cc9f0' },
+                { price: fib500, title: 'Fib 50.0%', color: '#e7c6ff' },
+                { price: fib618, title: 'Fib 61.8%', color: '#f72585' }
+            ];
+
+            levels.forEach(lvl => {
+                const line = candlestickSeries.createPriceLine({
+                    price: lvl.price,
+                    color: lvl.color,
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dashed,
+                    axisLabelVisible: true,
+                    title: `${lvl.title} (${Math.round(lvl.price).toLocaleString()})`,
+                });
+                fibLines.push(line);
+            });
+        }
+
         async function loadChartData() {
             try {
                 const res = await fetch(`/api/candles?tf=${currentTF}`);
                 const data = await res.json();
                 if (data && data.length > 0) {
-                    const localData = data.map(item => ({ ...item, time: item.time + tzOffset }));
-                    candlestickSeries.setData(localData);
+                    const candles = [];
+                    const ema21Data = [];
+                    const ema50Data = [];
+                    const ema200Data = [];
+
+                    data.forEach(item => {
+                        const t = item.time + tzOffset;
+                        candles.push({ time: t, open: item.open, high: item.high, low: item.low, close: item.close });
+                        if (item.ema21) ema21Data.push({ time: t, value: item.ema21 });
+                        if (item.ema50) ema50Data.push({ time: t, value: item.ema50 });
+                        if (item.ema200) ema200Data.push({ time: t, value: item.ema200 });
+                    });
+
+                    candlestickSeries.setData(candles);
+                    ema21Series.setData(ema21Data);
+                    ema50Series.setData(ema50Data);
+                    ema200Series.setData(ema200Data);
+
+                    updateFibonacci(candles);
                 }
             } catch (e) { console.error(e); }
         }
