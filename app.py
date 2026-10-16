@@ -1,4 +1,4 @@
-from flask import Flask, render_template, jsonify
+from flask import Flask, render_template, jsonify, request
 import requests
 import threading
 import time
@@ -11,7 +11,11 @@ TELEGRAM_BOT_TOKEN = "8986056921:AAGRWD4YpmhnoHL47__TmzA6qa5JR4ShDHw"
 TELEGRAM_CHAT_ID = "6713234903"
 
 raw_ticks = []
-ohlc_candles = []
+ohlc_candles = {
+    "1h": [],
+    "4h": [],
+    "1d": []
+}
 
 latest_price_data = {
     "sell_price": 0,
@@ -39,6 +43,47 @@ def parse_price(val):
     clean_str = str(val).replace(',', '').strip()
     return float(clean_str) if clean_str else 0.0
 
+def calc_indicators(df_ohlc):
+    """ฟังก์ชันคำนวณ EMA21, EMA50, RSI14"""
+    if len(df_ohlc) < 3:
+        return df_ohlc
+    df_ohlc['ema21'] = df_ohlc['close'].ewm(span=min(21, len(df_ohlc)), adjust=False).mean()
+    df_ohlc['ema50'] = df_ohlc['close'].ewm(span=min(50, len(df_ohlc)), adjust=False).mean()
+
+    delta = df_ohlc['close'].diff()
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
+    rs = avg_gain / (avg_loss + 1e-10)
+    df_ohlc['rsi'] = 100 - (100 / (1 + rs))
+    return df_ohlc
+
+def to_chart_data(df_ohlc):
+    chart_data = []
+    for idx, row in df_ohlc.iterrows():
+        chart_data.append({
+            "time": int(idx.timestamp()),
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close'])
+        })
+    return chart_data
+
+def get_tf_bias(df_ohlc):
+    """ประเมินทิศทางของ Timeframe นั้นๆ (+1 ขาขึ้น, -1 ขาลง, 0 ก้ำกึ่ง)"""
+    if len(df_ohlc) < 3:
+        return 0
+    last = df_ohlc.iloc[-1]
+    c, e21, e50, rsi = last['close'], last.get('ema21', 0), last.get('ema50', 0), last.get('rsi', 50)
+    
+    if c >= e21 and e21 >= e50 and rsi >= 50:
+        return 1
+    elif c <= e21 and e21 <= e50 and rsi <= 50:
+        return -1
+    return 0
+
 def fetch_hsh_api():
     global raw_ticks, ohlc_candles, latest_price_data
     last_signal = "WAIT"
@@ -48,13 +93,7 @@ def fetch_hsh_api():
             res = requests.get("https://apicheckpricev3.huasengheng.com/api/Values/GetPrice", timeout=5)
             if res.status_code == 200:
                 data = res.json()
-                
-                if isinstance(data, list) and len(data) > 0:
-                    item = data[0]
-                elif isinstance(data, dict):
-                    item = data
-                else:
-                    item = {}
+                item = data[0] if isinstance(data, list) and len(data) > 0 else (data if isinstance(data, dict) else {})
 
                 sell_raw = item.get("Sell965") or item.get("Sell") or item.get("sell") or item.get("sellPrice") or 0
                 buy_raw = item.get("Buy965") or item.get("Buy") or item.get("buy") or item.get("buyPrice") or 0
@@ -76,73 +115,42 @@ def fetch_hsh_api():
                     df_ticks['datetime'] = pd.to_datetime(df_ticks['time'], unit='s')
                     df_ticks.set_index('datetime', inplace=True)
                     
-                    # ปรับเป็น Timeframe 1 ชั่วโมง (1h)
-                    df_ohlc = df_ticks['price'].resample('1h').ohlc().dropna()
+                    # Resample สำหรับ Timeframes 1h, 4h, 1D
+                    df_1h = calc_indicators(df_ticks['price'].resample('1h').ohlc().dropna())
+                    df_4h = calc_indicators(df_ticks['price'].resample('4h').ohlc().dropna())
+                    df_1d = calc_indicators(df_ticks['price'].resample('1D').ohlc().dropna())
                     
-                    chart_data = []
-                    for idx, row in df_ohlc.iterrows():
-                        chart_data.append({
-                            "time": int(idx.timestamp()),
-                            "open": float(row['open']),
-                            "high": float(row['high']),
-                            "low": float(row['low']),
-                            "close": float(row['close'])
-                        })
-                    ohlc_candles = chart_data
+                    ohlc_candles["1h"] = to_chart_data(df_1h)
+                    ohlc_candles["4h"] = to_chart_data(df_4h)
+                    ohlc_candles["1d"] = to_chart_data(df_1d)
 
-                    if len(df_ohlc) >= 3:
-                        # คำนวณ EMA21, EMA50 และ RSI14 ด้วย pandas
-                        df_ohlc['ema21'] = df_ohlc['close'].ewm(span=min(21, len(df_ohlc)), adjust=False).mean()
-                        df_ohlc['ema50'] = df_ohlc['close'].ewm(span=min(50, len(df_ohlc)), adjust=False).mean()
+                    # ตรวจสอบทิศทางทั้ง 3 TF (1h, 4h, 1d)
+                    b_1h = get_tf_bias(df_1h)
+                    b_4h = get_tf_bias(df_4h)
+                    b_1d = get_tf_bias(df_1d)
 
-                        delta = df_ohlc['close'].diff()
-                        gain = delta.where(delta > 0, 0)
-                        loss = -delta.where(delta < 0, 0)
-                        avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-                        avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-                        rs = avg_gain / (avg_loss + 1e-10)
-                        df_ohlc['rsi'] = 100 - (100 / (1 + rs))
+                    current_signal = "WAIT"
+                    if b_1h == 1 and b_4h == 1 and b_1d == 1:
+                        current_signal = "BUY"
+                    elif b_1h == -1 and b_4h == -1 and b_1d == -1:
+                        current_signal = "SELL"
 
-                        last_row = df_ohlc.iloc[-1]
-                        close_p = last_row['close']
-                        ema21_p = last_row.get('ema21', close_p)
-                        ema50_p = last_row.get('ema50', close_p)
-                        rsi_p = last_row.get('rsi', 50)
+                    latest_price_data["signal"] = current_signal
+                    
+                    def fmt_bias(b): return "BULL" if b == 1 else ("BEAR" if b == -1 else "MIXED")
+                    latest_price_data["score"] = f"1h: {fmt_bias(b_1h)} | 4h: {fmt_bias(b_4h)} | 1d: {fmt_bias(b_1d)}"
 
-                        long_score = 0
-                        if close_p >= ema21_p: long_score += 3
-                        if ema21_p >= ema50_p: long_score += 3
-                        if rsi_p >= 50: long_score += 2
-                        if rsi_p < 70: long_score += 2
-
-                        short_score = 0
-                        if close_p <= ema21_p: short_score += 3
-                        if ema21_p <= ema50_p: short_score += 3
-                        if rsi_p <= 50: short_score += 2
-                        if rsi_p > 30: short_score += 2
-
-                        current_signal = "WAIT"
-                        if long_score >= 8:
-                            current_signal = "BUY"
-                        elif short_score >= 8:
-                            current_signal = "SELL"
-
-                        latest_price_data["signal"] = current_signal
-                        latest_price_data["score"] = f"Long: {long_score}/10 | Short: {short_score}/10 (1h)"
-
-                        if current_signal != last_signal and current_signal != "WAIT":
-                            msg = f"🔔 [Gold Now Alert - 1h]\nสัญญาณ: {current_signal}\nราคาขายออก: {sell_price:,.0f} บาท\nRSI: {rsi_p:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
-                            send_telegram_alert(msg)
-                            last_signal = current_signal
-                    else:
-                        latest_price_data["score"] = f"รอแท่งเทียน 1h ({len(df_ohlc)}/3)"
+                    if current_signal != last_signal and current_signal != "WAIT":
+                        rsi_val = df_1h.iloc[-1].get('rsi', 0) if len(df_1h) > 0 else 0
+                        msg = f"🔔 [Gold Now Alert - Major MTF]\nสัญญาณ: {current_signal} (สอดคล้อง 3 TF: 1H, 4H, 1D)\nราคาขายออก: {sell_price:,.0f} บาท\nRSI 1h: {rsi_val:.1f}\nเวลา: {now.strftime('%H:%M:%S')}"
+                        send_telegram_alert(msg)
+                        last_signal = current_signal
 
         except Exception as e:
             print(f"Error fetching HSH API: {e}")
 
         time.sleep(5)
 
-# เรียกการทำงานของ Thread ดึงราคา Realtime รองรับทั้ง Local และ Gunicorn
 threading.Thread(target=fetch_hsh_api, daemon=True).start()
 
 @app.route("/")
@@ -151,7 +159,8 @@ def index():
 
 @app.route("/api/candles")
 def get_candles():
-    return jsonify(ohlc_candles)
+    tf = request.args.get('tf', '1h')
+    return jsonify(ohlc_candles.get(tf, ohlc_candles["1h"]))
 
 @app.route("/api/live")
 def get_live():

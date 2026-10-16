@@ -3,15 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gold Now Realtime Chart</title>
+    <title>Gold Now Realtime MTF Chart (1H, 4H, 1D)</title>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         body { margin: 0; padding: 20px; background-color: #131722; color: #d1d4dc; font-family: sans-serif; }
-        .dashboard { display: flex; gap: 20px; margin-bottom: 15px; background: #1e222d; padding: 15px; border-radius: 8px; }
+        .dashboard { display: flex; gap: 20px; margin-bottom: 15px; background: #1e222d; padding: 15px; border-radius: 8px; flex-wrap: wrap; }
         .card { font-size: 14px; }
         .val { font-size: 20px; font-weight: bold; color: #ffb703; }
         .buy { color: #26a69a; }
         .sell { color: #ef5350; }
+        .tf-container { margin-bottom: 10px; display: flex; gap: 10px; }
+        .tf-btn { background: #2b2b43; color: #fff; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        .tf-btn.active { background: #ffb703; color: #000; }
         #chart { width: 100%; height: 500px; background-color: #1e222d; border-radius: 8px; overflow: hidden; }
     </style>
 </head>
@@ -27,75 +30,64 @@
             <div class="val" id="buyPrice">-</div>
         </div>
         <div class="card">
-            <div>สถานะสัญญาณ</div>
+            <div>สถานะสัญญาณ MTF</div>
             <div class="val" id="signalText">WAIT</div>
         </div>
         <div class="card">
-            <div>คะแนนอินดิเคเตอร์</div>
+            <div>สถานะ 3 Timeframes (1H/4H/1D)</div>
             <div class="val" id="scoreText" style="font-size: 14px; color: #aaa;">-</div>
         </div>
+    </div>
+
+    <div class="tf-container">
+        <button class="tf-btn active" onclick="setTF('1h', this)">1H</button>
+        <button class="tf-btn" onclick="setTF('4h', this)">4H</button>
+        <button class="tf-btn" onclick="setTF('1d', this)">1D</button>
     </div>
 
     <div id="chart"></div>
 
     <script>
+        let currentTF = '1h';
         const chartElement = document.getElementById('chart');
-        
-        // คำนวณ Timezone Offset ของเครื่องผู้ใช้ (เช่น ไทย = +7 ชั่วโมง)
         const tzOffset = -new Date().getTimezoneOffset() * 60;
         
         const chart = LightweightCharts.createChart(chartElement, {
             width: chartElement.clientWidth,
             height: 500,
-            layout: { 
-                background: { type: 'solid', color: '#1e222d' }, 
-                textColor: '#d1d4dc' 
-            },
-            grid: { 
-                vertLines: { color: '#2b2b43' }, 
-                horzLines: { color: '#2b2b43' } 
-            },
-            timeScale: { 
-                timeVisible: true, 
-                secondsVisible: false 
-            }
+            layout: { background: { type: 'solid', color: '#1e222d' }, textColor: '#d1d4dc' },
+            grid: { vertLines: { color: '#2b2b43' }, horzLines: { color: '#2b2b43' } },
+            timeScale: { timeVisible: true, secondsVisible: false }
         });
 
         const candlestickSeries = chart.addCandlestickSeries({
-            upColor: '#26a69a', 
-            downColor: '#ef5350', 
-            borderVisible: false,
-            wickUpColor: '#26a69a', 
-            wickDownColor: '#ef5350',
-            priceFormat: {
-                type: 'price',
-                precision: 0,
-                minMove: 1,
-            },
+            upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+            wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+            priceFormat: { type: 'price', precision: 0, minMove: 1 }
         });
+
+        function setTF(tf, btn) {
+            currentTF = tf;
+            document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            loadChartData();
+        }
 
         async function loadChartData() {
             try {
-                const res = await fetch('/api/candles');
+                const res = await fetch(`/api/candles?tf=${currentTF}`);
                 const data = await res.json();
                 if (data && data.length > 0) {
-                    // ปรับเวลา UTC ให้เป็นเวลา Local (เวลาไทย)
-                    const localData = data.map(item => ({
-                        ...item,
-                        time: item.time + tzOffset
-                    }));
+                    const localData = data.map(item => ({ ...item, time: item.time + tzOffset }));
                     candlestickSeries.setData(localData);
                 }
-            } catch (e) { 
-                console.error("Chart data error:", e); 
-            }
+            } catch (e) { console.error(e); }
         }
 
         async function updateDashboard() {
             try {
                 const res = await fetch('/api/live');
                 const data = await res.json();
-                
                 document.getElementById('sellPrice').innerText = data.sell_price > 0 ? data.sell_price.toLocaleString() + " บาท" : "-";
                 document.getElementById('buyPrice').innerText = data.buy_price > 0 ? data.buy_price.toLocaleString() + " บาท" : "-";
                 
@@ -104,14 +96,10 @@
                 sigEl.className = "val " + (data.signal === 'BUY' ? 'buy' : data.signal === 'SELL' ? 'sell' : '');
                 
                 document.getElementById('scoreText').innerText = data.score;
-            } catch (e) { 
-                console.error("Dashboard update error:", e); 
-            }
+            } catch (e) { console.error(e); }
         }
 
-        window.addEventListener('resize', () => {
-            chart.applyOptions({ width: chartElement.clientWidth });
-        });
+        window.addEventListener('resize', () => { chart.applyOptions({ width: chartElement.clientWidth }); });
 
         updateDashboard();
         loadChartData();
