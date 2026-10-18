@@ -115,8 +115,12 @@ def fetch_hsh_api():
                 latest_price_data["buy_price"] = buy_price
                 latest_price_data["last_updated"] = now.strftime("%H:%M:%S")
 
-                if sell_price > 0:
-                    raw_ticks.append({"time": now_ts, "price": sell_price})
+                # เช็กว่าเป็นวันเสาร์ (5) หรือ อาทิตย์ (6) หรือไม่
+		is_weekend = now.weekday() in [5, 6]
+
+		# บันทึกราคาเฉพาะวันจันทร์ - ศุกร์ เท่านั้น
+		if sell_price > 0 and not is_weekend:
+    		raw_ticks.append({"time": now_ts, "price": sell_price})
                     
                     df_ticks = pd.DataFrame(raw_ticks)
                     df_ticks['datetime'] = pd.to_datetime(df_ticks['time'], unit='s')
